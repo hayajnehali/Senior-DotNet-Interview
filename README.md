@@ -8,6 +8,7 @@
 |---|---|---|
 | 01 | Why is DbContext registered as Scoped by default? | [01-DbContext-Lifetime](Topics/01-DbContext-Lifetime.md) |
 | 02 | ASP.NET Core Middleware Pipeline & Request Lifecycle | [02-Middleware-Pipeline](Topics/02-Middleware-Pipeline.md) |
+| 03 | Model Binding & Validation in ASP.NET Core Web API | [03-Model-Binding-Validation](Topics/03-Model-Binding-Validation.md) |
 
 ## Documentation format
 
