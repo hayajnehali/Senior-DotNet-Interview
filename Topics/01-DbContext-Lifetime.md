@@ -1,8 +1,12 @@
-# Why Is DbContext Registered as Scoped by Default?
+# 01 - Why Is DbContext Registered as Scoped by Default?
 
-## 1. Short answer
+## 1. الفكرة باختصار | Short Answer
 
-In ASP.NET Core, `AddDbContext<TContext>()` registers the DbContext as **Scoped** by default. This gives each web request (more precisely, each DI scope) its own DbContext instance, allowing related operations in that scope to share one change tracker and unit-of-work boundary without sharing a non-thread-safe context across unrelated requests.
+في ASP.NET Core، الدالة `AddDbContext<TContext>()` تسجّل `DbContext` كـ **Scoped** افتراضياً.
+
+يعني غالباً كل HTTP Request يحصل على نسخة مستقلة من `DbContext`، والخدمات التي تعمل داخل نفس الـ Request Scope يمكنها مشاركة النسخة نفسها.
+
+**Why Scoped?** A request scope is a natural unit-of-work boundary. It lets related services share one change tracker without sharing a non-thread-safe context across unrelated requests.
 
 ```csharp
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -10,31 +14,28 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         builder.Configuration.GetConnectionString("Default")));
 ```
 
-Equivalent lifetime configuration:
+> ملاحظة: المقصود بدقة هو نسخة واحدة لكل DI Scope، وليس بالضرورة لكل HTTP Request في كل أنواع التطبيقات. في تطبيقات الويب المعتادة، يُنشأ Scope لكل Request.
 
-```csharp
-builder.Services.AddDbContext<AppDbContext>(
-    options => options.UseSqlServer(connectionString),
-    contextLifetime: ServiceLifetime.Scoped,
-    optionsLifetime: ServiceLifetime.Scoped);
-```
+## 2. ما وظيفة DbContext؟ | What does it do?
 
-## 2. What does a DbContext do?
+`DbContext` هو المكوّن الأساسي في EF Core للتعامل مع قاعدة البيانات، ويقوم بـ:
 
-A DbContext is the primary EF Core unit for:
-- Querying entities from the database.
-- Tracking entity states: Added, Modified, Deleted, Unchanged, Detached.
-- Applying changes through `SaveChanges()` / `SaveChangesAsync()`.
-- Coordinating database operations and transactions where supported.
+- تنفيذ الاستعلامات وجلب البيانات.
+- تتبّع حالة الكيانات (Change Tracking)، مثل Added وModified وDeleted.
+- حفظ التغييرات باستخدام `SaveChangesAsync()`.
+- إدارة عمليات الحفظ والمعاملات وفق قواعد EF Core ومزوّد قاعدة البيانات.
 
-Example:
+مثال:
 
 ```csharp
 public class OrdersService
 {
     private readonly AppDbContext _db;
 
-    public OrdersService(AppDbContext db) => _db = db;
+    public OrdersService(AppDbContext db)
+    {
+        _db = db;
+    }
 
     public async Task CreateAsync(Order order)
     {
@@ -44,64 +45,72 @@ public class OrdersService
 }
 ```
 
-The context tracks the entity after `Add`. Calling SaveChanges persists the pending changes.
+عند استدعاء `Add` تصبح حالة الكيان Added، وعند `SaveChangesAsync` يحاول EF Core حفظ التغييرات في قاعدة البيانات.
 
-## 3. Why Scoped?
+## 3. لماذا Scoped؟ | Why not share one context across requests?
 
-### A. One context per request scope
+تخيّل أن طلب HTTP واحد يحتاج إلى خدمتين:
 
-In a typical ASP.NET Core application, a request creates a DI scope. Scoped services resolved within that scope share the same instance.
+- `OrdersService`
+- `InventoryService`
 
-If `OrdersService` and `InventoryService` both receive the same scoped AppDbContext during one request, they can participate in the same unit of work.
+إذا كانتا ضمن نفس الـ Scope وتم حقن `AppDbContext` فيهما، فستحصلان على نفس النسخة.
 
-### B. Appropriate change-tracking boundary
+**الفائدة:** يمكنهما مشاركة Change Tracker والعمل ضمن وحدة عمل (Unit of Work) واحدة.
 
-A request commonly performs a related set of operations. A scoped context can track those changes and persist them together when the application calls SaveChanges.
+أما Request آخر فيحصل على Scope ونسخة DbContext مختلفين.
 
-### C. Avoids cross-request state leakage
+```text
+HTTP Request 1  -> Scope 1 -> DbContext A
+   OrdersService   ─┐
+                    ├── نفس DbContext A
+   InventoryService ┘
 
-A Singleton DbContext could be shared by many requests. Its change tracker could retain entities and state across requests, creating correctness, concurrency, and memory problems.
-
-### D. Lifetime aligns with common web application services
-
-Application services and repositories are often scoped. A scoped DbContext can be injected into them without a captive-dependency lifetime violation.
-
-## 4. Why not Singleton?
-
-DbContext is **not thread-safe**. EF Core does not support multiple parallel operations on the same context instance.
-
-Incorrect:
-
-```csharp
-builder.Services.AddDbContext<AppDbContext>(
-    options => options.UseSqlServer(connectionString),
-    ServiceLifetime.Singleton);
+HTTP Request 2  -> Scope 2 -> DbContext B
 ```
 
-Potential consequences:
-- Concurrent operations can throw an exception or cause undefined application behavior.
-- Change-tracker state can be shared across users/requests.
-- Tracked entities can remain alive much longer than intended.
-- A singleton service cannot safely consume a scoped DbContext.
+هذا يقلل مشاركة حالة التتبع بين المستخدمين والطلبات المختلفة، ويجعل عمر السياق مناسباً لعملية العمل المعتادة.
 
-Never use one DbContext instance concurrently from multiple threads.
+## 4. لماذا لا نستخدم Singleton؟ | Why not Singleton?
 
-## 5. Why not Transient?
+`DbContext` **ليس Thread-Safe**؛ أي لا يدعم تنفيذ عمليات متزامنة متعددة على نفس النسخة.
 
-Transient means a new instance is created each time the service is resolved. It can work in some designs, but it is usually not the desired default for request-level units of work.
+لو جعلناه Singleton فقد تستخدم Requests مختلفة نفس النسخة في الوقت نفسه، وقد ينتج عن ذلك:
 
-For example, two repositories resolving their own transient contexts may no longer share the same change tracker or unit of work. Changes made through one context are not automatically tracked by another.
+- أخطاء عند تنفيذ عمليات متزامنة.
+- مشاركة Change Tracker وبيانات متتبعة بين طلبات مختلفة.
+- احتفاظ الكائنات المتتبعة بالذاكرة مدة أطول من المطلوب.
 
-Scoped gives predictable sharing within a request scope.
+قد يظهر الخطأ التالي عند بدء عملية قبل انتهاء عملية أخرى على نفس السياق:
 
-## 6. Scoped does not mean one transaction per HTTP request
+```text
+A second operation was started on this context instance
+before a previous operation completed.
+```
 
-This is an important interview distinction.
+**الخلاصة:** لا تشارك نسخة DbContext واحدة بين Threads أو Requests متزامنة.
 
-- Scoped controls the lifetime of the DbContext instance.
-- It does not automatically begin a database transaction at the start of every HTTP request.
-- With relational providers, a single `SaveChanges` call is transactional by default when the provider supports transactions.
-- If several SaveChanges calls or other database operations must be atomic together, define an explicit transaction where appropriate.
+## 5. لماذا ليس Transient؟ | Why not Transient?
+
+`Transient` يعني أن الـ DI Container ينشئ نسخة جديدة عند كل عملية Resolve للخدمة.
+
+قد يؤدي ذلك إلى أن خدمتين في نفس الطلب تحصلان على نسختين مختلفتين من DbContext، وبالتالي لكل نسخة Change Tracker مستقل.
+
+مثلاً: إذا أضافت خدمة كياناً إلى سياقها، فلن يكون السياق الآخر على علم بهذا الكيان تلقائياً.
+
+لذلك يكون Scoped أنسب غالباً عندما نريد سياقاً واحداً مشتركاً داخل وحدة عمل الطلب.
+
+## 6. Scoped لا يعني Transaction تلقائياً
+
+هذه نقطة مهمة في المقابلات:
+
+- **Scoped** يحدد عمر الكائن.
+- **Transaction** تحدد مجموعة عمليات قاعدة البيانات التي يجب أن تنجح أو تفشل معاً.
+- لا يبدأ ASP.NET Core تلقائياً Transaction واحدة لكل HTTP Request لمجرد أن DbContext مسجل Scoped.
+- مع مزوّد علائقي يدعم المعاملات، يقوم EF Core عادةً بتنفيذ كل استدعاء `SaveChanges` داخل Transaction واحدة.
+- إذا احتجت إلى جعل عدة عمليات حفظ مستقلة جزءاً من عملية ذرّية واحدة، استخدم Transaction صريحة عند الحاجة.
+
+مثال مختصر:
 
 ```csharp
 await using var transaction =
@@ -112,7 +121,7 @@ try
     _db.Orders.Add(order);
     await _db.SaveChangesAsync();
 
-    inventory.Quantity -= order.Quantity;
+    product.Stock -= order.Quantity;
     await _db.SaveChangesAsync();
 
     await transaction.CommitAsync();
@@ -124,22 +133,23 @@ catch
 }
 ```
 
-Use explicit transactions only when the business operation requires multiple operations to commit or roll back as one unit.
+إذا أمكن تنفيذ التغييرات المرتبطة كلها ثم استدعاء `SaveChangesAsync` مرة واحدة، فهذا غالباً أبسط؛ لأن EF Core يوفّر Transaction للحفظ الواحد مع المزوّدات العلائقية الداعمة.
 
-## 7. DbContext and Unit of Work
+## 7. DbContext و Unit of Work
 
-DbContext naturally implements the Unit of Work and Repository-related capabilities:
-- It tracks changes to entities.
-- It coordinates persistence.
-- SaveChanges commits the tracked changes to the database.
+يوفّر `DbContext` وظائف Unit of Work بشكل طبيعي:
 
-You do not necessarily need to wrap EF Core in another generic repository/unit-of-work abstraction. Add abstractions when they provide a real architectural or testing benefit, not merely to duplicate DbContext.
+1. يتتبع التغييرات على الكيانات.
+2. يجمع التغييرات المعلّقة.
+3. يحفظها عند استدعاء `SaveChanges`.
 
-## 8. Background services
+لا تحتاج دائماً إلى إنشاء Generic Repository أو Unit of Work إضافي فوق EF Core؛ أضف هذه الطبقات عندما تقدم فائدة معمارية حقيقية، لا لمجرد تكرار وظائف DbContext.
 
-Hosted services are commonly registered as Singleton. Injecting a scoped DbContext directly into a singleton BackgroundService is a lifetime mismatch.
+## 8. ماذا لو احتجنا DbContext داخل BackgroundService؟
 
-Create a scope for each unit of background work:
+غالباً تكون خدمات `BackgroundService` طويلة العمر (Singleton). لذلك لا تحقن DbContext المسجل Scoped مباشرة في Constructor الخاص بها؛ فهذا يسبب تعارضاً في Lifetimes يسمى **Captive Dependency**.
+
+أنشئ Scope لكل عملية عمل:
 
 ```csharp
 public sealed class OrderWorker : BackgroundService
@@ -147,52 +157,58 @@ public sealed class OrderWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
 
     public OrderWorker(IServiceScopeFactory scopeFactory)
-        => _scopeFactory = scopeFactory;
+    {
+        _scopeFactory = scopeFactory;
+    }
 
     protected override async Task ExecuteAsync(
         CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            await using var scope = _scopeFactory.CreateAsyncScope();
+        await using var scope = _scopeFactory.CreateAsyncScope();
 
-            var db = scope.ServiceProvider
-                .GetRequiredService<AppDbContext>();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
 
-            // Perform one unit of work using this context.
-            await ProcessPendingOrdersAsync(db, stoppingToken);
-        }
+        await ProcessPendingOrdersAsync(db, stoppingToken);
     }
 
     private static Task ProcessPendingOrdersAsync(
         AppDbContext db, CancellationToken cancellationToken)
     {
-        // Application-specific processing.
+        // تنفيذ عملية العمل
         return Task.CompletedTask;
     }
 }
 ```
 
-Dispose the scope after the unit of work so its scoped services, including DbContext, are disposed.
+في Worker يعمل باستمرار، أنشئ Scope جديداً لكل دورة أو وحدة عمل، ولا تجعل Scope واحداً يمتد بلا داعٍ طوال عمر التطبيق.
 
-## 9. IDbContextFactory
+## 9. متى نستخدم IDbContextFactory؟
 
-Use `IDbContextFactory<TContext>` when the application needs to create and dispose contexts explicitly, for example:
-- Blazor components with lifetimes that do not match a request.
-- Multiple independent units of work inside one scope.
-- Parallel operations that each require their own context.
-- Background processing where an explicit context boundary is useful.
+نستخدم `IDbContextFactory<TContext>` عندما نحتاج إنشاء DbContext والتحكم بعمره يدوياً، مثل:
+
+- تنفيذ أكثر من Unit of Work مستقلة داخل نفس Scope.
+- تنفيذ عمليات متوازية، بحيث تحصل كل عملية على DbContext مستقل.
+- بعض سيناريوهات Blazor أو Background Processing.
+
+التسجيل:
 
 ```csharp
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
     options.UseSqlServer(connectionString));
+```
 
-public sealed class ReportService
+الاستخدام:
+
+```csharp
+public class ReportService
 {
     private readonly IDbContextFactory<AppDbContext> _factory;
 
     public ReportService(IDbContextFactory<AppDbContext> factory)
-        => _factory = factory;
+    {
+        _factory = factory;
+    }
 
     public async Task<int> CountOrdersAsync()
     {
@@ -202,20 +218,21 @@ public sealed class ReportService
 }
 ```
 
-A context created by the factory is the caller's responsibility to dispose.
+**مهم:** الكود الذي ينشئ Context من Factory هو المسؤول عن التخلص منه (Dispose)، لذلك استخدم `using` أو `await using`.
 
-## 10. Parallel queries
+## 10. العمليات المتوازية | Parallel Operations
 
-Do not do this with one context:
+لا تنفّذ عمليتين متوازيتين على نفس DbContext:
 
 ```csharp
-// Incorrect: concurrent operations on the same DbContext.
+// خطأ: العمليتان تستخدمان نفس DbContext بالتزامن
 var ordersTask = _db.Orders.ToListAsync();
 var usersTask = _db.Users.ToListAsync();
+
 await Task.WhenAll(ordersTask, usersTask);
 ```
 
-Prefer sequential operations, or create separate contexts for genuinely parallel work:
+إذا كان التوازي ضرورياً، استخدم Context منفصلاً لكل عملية، مثلاً عبر `IDbContextFactory`:
 
 ```csharp
 await using var db1 = await _factory.CreateDbContextAsync();
@@ -227,62 +244,79 @@ var usersTask = db2.Users.ToListAsync();
 await Task.WhenAll(ordersTask, usersTask);
 ```
 
-Each context has its own tracking state and must be disposed.
+كل Context له Change Tracker مستقل ويجب التخلص منه بعد الانتهاء.
 
-## 11. Lifetime comparison
+## 11. مقارنة Lifetimes
 
-| Lifetime | Instance behavior | Typical DbContext suitability |
+| Lifetime | المعنى | هل يناسب DbContext عادةً؟ |
 |---|---|---|
-| Transient | New instance per resolution | Possible, but can split a unit of work |
-| Scoped | One instance per DI scope | Default and recommended for typical web requests |
-| Singleton | One instance for application lifetime | Not suitable for DbContext |
+| Transient | نسخة جديدة عند كل Resolve | ممكن، لكنه قد يفصل وحدة العمل بين الخدمات |
+| Scoped | نسخة واحدة داخل Scope | نعم، وهو التسجيل الافتراضي المعتاد |
+| Singleton | نسخة واحدة طوال عمر التطبيق | لا، لأنه غير Thread-Safe |
 
-## 12. Common interview mistakes
-
-- Saying Scoped means a transaction automatically wraps the whole HTTP request.
-- Claiming DbContext is thread-safe.
-- Running parallel EF operations on one context.
-- Injecting a scoped DbContext into a singleton BackgroundService.
-- Assuming two transient repositories necessarily share one context.
-- Treating IDbContextFactory as a reason to keep contexts alive indefinitely.
-
-## 13. Senior interview Q&A
+## 12. أسئلة مقابلات Senior | Interview Q&A
 
 ### Q1. Why is DbContext registered as Scoped by default?
-**Answer:** Because a request scope provides a natural unit-of-work boundary. Services in the same scope can share one change tracker, while separate requests receive separate contexts. This avoids sharing a non-thread-safe DbContext across requests.
+
+**Answer:** A request scope provides a natural unit-of-work boundary. Services in the same scope can share one change tracker, while separate requests get separate DbContext instances.
+
+**بالعربي:** لأن Scoped يسمح لخدمات الطلب الواحد بمشاركة نفس السياق، بينما يحصل كل طلب مستقل على سياق خاص به.
 
 ### Q2. Is DbContext thread-safe?
-**Answer:** No. EF Core does not support concurrent operations on the same DbContext instance. I use separate contexts for parallel operations.
 
-### Q3. Does Scoped mean one transaction per request?
-**Answer:** No. Scoped defines object lifetime, not transaction boundaries. A relational provider normally wraps an individual SaveChanges call in a transaction. Multiple operations requiring atomicity need an explicit transaction.
+**Answer:** No. EF Core does not support multiple concurrent operations on the same DbContext instance.
 
-### Q4. Can a Singleton service use DbContext?
-**Answer:** Not by directly constructor-injecting a scoped context. It can create a scope through IServiceScopeFactory, resolve the context inside that scope, and dispose the scope after the work.
+**بالعربي:** لا. لا تشغّل عمليات متزامنة على نفس النسخة؛ استخدم Context منفصلاً لكل عملية متوازية.
+
+### Q3. Does Scoped mean one transaction per HTTP request?
+
+**Answer:** No. Scoped controls object lifetime, not transaction boundaries. A relational provider normally wraps one SaveChanges call in a transaction.
+
+**بالعربي:** لا. Scoped يحدد عمر DbContext فقط، ولا ينشئ Transaction تلقائياً لكل Request.
+
+### Q4. Can a Singleton service inject a Scoped DbContext?
+
+**Answer:** Not directly. Use IServiceScopeFactory to create a scope, resolve the DbContext inside it, and dispose the scope after the work.
+
+**بالعربي:** لا تحقن Scoped مباشرة في Singleton؛ أنشئ Scope مستقلاً للعملية باستخدام IServiceScopeFactory.
 
 ### Q5. When would you use IDbContextFactory?
-**Answer:** When context creation must be explicit, such as background jobs, Blazor, multiple units of work in one scope, or independent contexts for parallel work.
 
-### Q6. Why not register DbContext as Transient?
-**Answer:** Transient can create separate contexts for separate resolutions, which may split tracking and persistence across repositories. Scoped provides one shared context within the request scope.
+**Answer:** When explicit context creation is needed, such as independent units of work or parallel operations that require separate contexts.
 
-### Q7. What happens if two services inject the same scoped DbContext?
-**Answer:** When resolved in the same scope, they receive the same instance and can share tracked changes. They still must not execute concurrent operations on it.
+**بالعربي:** عندما تحتاج التحكم بإنشاء DbContext والتخلص منه يدوياً، أو تحتاج سياقات مستقلة لعمليات متوازية.
 
-## 14. Practical exercise
+### Q6. What happens when two services inject the same Scoped DbContext?
 
-**Scenario:** An API request creates an order and decreases product stock. Both operations must succeed or fail together.
+**Answer:** If both are resolved from the same scope, they receive the same DbContext instance and can share tracked changes.
 
-1. Inject the same scoped DbContext into the application service.
-2. Load the product and validate available stock.
-3. Add the order and update stock.
-4. Call SaveChanges once if possible, so the related changes are persisted together.
-5. If the workflow requires multiple SaveChanges calls, use an explicit transaction.
-6. Do not run the two EF operations concurrently on the same context.
+**بالعربي:** إذا كانتا ضمن نفس Scope فستحصلان على نفس النسخة، لكن يجب ألا تنفذا عمليات متزامنة عليها.
 
-**Key takeaway:** Scoped gives a shared request-level DbContext; transaction boundaries must still be designed deliberately.
+## 13. تمرين عملي | Practical Exercise
 
-## 15. Official references
+**Scenario:** طلب API ينشئ Order ويقلل كمية المنتج في المخزون. يجب أن تنجح العمليتان معاً أو تفشلا معاً.
+
+المطلوب:
+
+1. احقن نفس Scoped DbContext في الخدمة المسؤولة.
+2. اقرأ المنتج وتأكد من توفر الكمية.
+3. أضف الطلب وحدّث كمية المخزون.
+4. حاول حفظ التغييرات المرتبطة باستدعاء واحد لـ `SaveChangesAsync`.
+5. إذا احتجت عدة عمليات حفظ ويجب أن تكون كلها ذرّية، استخدم Transaction صريحة.
+6. لا تنفذ عمليات EF متوازية على نفس DbContext.
+
+**Key takeaway:** Scoped gives one shared DbContext per scope. It does not automatically create a transaction for the entire HTTP request.
+
+## 14. أخطاء شائعة | Common Mistakes
+
+- الاعتقاد أن Scoped يعني Transaction تلقائية لكل Request.
+- تسجيل DbContext كـ Singleton.
+- تشغيل استعلامين بالتزامن على نفس DbContext.
+- حقن DbContext Scoped مباشرة داخل Singleton أو BackgroundService.
+- افتراض أن الخدمات التي تستخدم Contexts مختلفة تشارك Change Tracker واحداً.
+- إنشاء Context من Factory وعدم التخلص منه.
+
+## 15. مراجع Microsoft الرسمية | Official References
 
 - [DbContext lifetime, configuration, and initialization](https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/)
 - [DbContext is not thread-safe](https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#the-dbcontext-lifetime)
