@@ -4,6 +4,75 @@
 >
 > **ملاحظة:** الشرح الداخلي مبسّط لتوضيح الفكرة. الكود الذي يولّده C# compiler قد يختلف في تفاصيله بين إصدارات .NET، لذلك لا تعتبر أسماء الحقول أو أرقام الحالات أدناه عقداً ثابتاً.
 
+
+
+## Definitions | التعريفات (English first, then Arabic)
+
+### Thread
+**English:** A thread is an execution path within a process that the operating system schedules to run instructions on a CPU core.
+
+**العربي:** الـ Thread هو مسار تنفيذ داخل البرنامج، يقوم نظام التشغيل بجدولته لتنفيذ التعليمات على نواة المعالج.
+
+### ThreadPool
+**English:** The .NET ThreadPool is a managed collection of reusable worker threads used to execute queued work without creating a new thread for every operation.
+
+**العربي:** الـ ThreadPool هي مجموعة Threads يديرها .NET ويعيد استخدامها لتنفيذ الأعمال المجدولة، بدلاً من إنشاء Thread جديد لكل عملية.
+
+### Task
+**English:** A Task represents an asynchronous operation and its completion state. A Task<T> can also provide a result when the operation completes.
+
+**العربي:** الـ Task تمثل عملية غير متزامنة وحالة اكتمالها. أما Task<T> فتحمل أيضاً النتيجة التي تنتج عند اكتمال العملية.
+
+### async
+**English:** The async modifier enables the await keyword in a method and allows the compiler to transform the method into an asynchronous state machine.
+
+**العربي:** الكلمة async تسمح باستخدام await داخل الدالة، وتجعل المترجم يحول الدالة إلى State Machine تدير تنفيذها غير المتزامن. وهي بحد ذاتها لا تنشئ Thread جديداً.
+
+### await
+**English:** The await operator checks whether an awaitable operation has completed. If it has not, it suspends the method's continuation and arranges for it to resume when the operation completes.
+
+**العربي:** العامل await يفحص هل العملية المنتظرة اكتملت. إذا لم تكتمل، يعلّق استمرار الدالة ويسجل استئنافها عند اكتمال العملية، دون حجز Thread لمجرد انتظار I/O غير المتزامن.
+
+### State Machine
+**English:** A compiler-generated structure that tracks an async method's execution state, preserves the values needed across await points, and resumes the method when awaited operations complete.
+
+**العربي:** بنية يولّدها المترجم لتتبع مرحلة تنفيذ دالة async، وحفظ القيم التي تحتاجها بعد await، ثم استكمال الدالة عند اكتمال العمليات المنتظرة.
+
+### Awaiter
+**English:** An awaiter exposes the completion status of an awaitable operation, provides its result, and participates in registering the continuation.
+
+**العربي:** الـ Awaiter يتيح فحص اكتمال العملية، والحصول على نتيجتها أو الخطأ، والمشاركة في تسجيل الكود الذي سيكمل التنفيذ.
+
+### Continuation
+**English:** A continuation is the work scheduled to run after an asynchronous operation completes, allowing the suspended method to continue.
+
+**العربي:** الـ Continuation هو الجزء الذي تتم جدولته للتنفيذ بعد اكتمال العملية غير المتزامنة، حتى تتابع الدالة من المكان الذي توقفت عنده.
+
+### AsyncTaskMethodBuilder
+**English:** AsyncTaskMethodBuilder is a compiler-facing helper that manages the Task returned by an async method and completes it with a result, exception, or cancellation.
+
+**العربي:** AsyncTaskMethodBuilder هو مكوّن يستخدمه الكود الذي يولّده المترجم لإدارة الـ Task التي ترجعها دالة async، وإكمالها بنتيجة أو خطأ أو إلغاء.
+
+### Blocking
+**English:** Blocking occurs when a thread is forced to wait and cannot perform other work until the awaited operation finishes.
+
+**العربي:** يحدث Blocking عندما يبقى الـ Thread منتظراً ولا يستطيع تنفيذ عمل آخر حتى تنتهي العملية.
+
+### I/O-bound operation
+**English:** An I/O-bound operation spends most of its time waiting for an external resource, such as a database, network service, or file system.
+
+**العربي:** عملية تعتمد على الإدخال والإخراج، وتقضي معظم وقتها بانتظار مورد خارجي مثل قاعدة البيانات أو الشبكة أو الملفات.
+
+### CPU-bound operation
+**English:** A CPU-bound operation spends most of its time performing calculations and consuming processor time.
+
+**العربي:** عملية تعتمد على المعالج، وتقضي معظم وقتها في تنفيذ الحسابات واستهلاك وقت الـ CPU.
+
+### ThreadPool starvation
+**English:** ThreadPool starvation occurs when queued work cannot obtain worker threads promptly, often because existing pool threads are blocked for long periods.
+
+**العربي:** يحدث ThreadPool starvation عندما لا تجد الأعمال الجديدة Threads متاحة بسرعة، وغالباً بسبب انشغال Threads الموجودة لفترات طويلة بعمليات Blocking.
+
 ## 1. Thread
 
 ### التعريف | Definition
